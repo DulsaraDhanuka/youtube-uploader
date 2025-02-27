@@ -1,4 +1,4 @@
-from flask import Flask, request, Response
+from flask import Flask, request, Response, url_for, session, redirect
 import requests
 from werkzeug.http import parse_options_header
 from urllib.parse import urlparse
@@ -13,21 +13,42 @@ import json
 load_dotenv(".env")
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY') or os.urandom(24)
 
 UPLOAD_FOLDER = 'youtube-uploads'
-scopes = ["https://www.googleapis.com/auth/youtubepartner", "https://www.googleapis.com/auth/youtube.force-ssl", "https://www.googleapis.com/auth/youtube", "https://www.googleapis.com/auth/youtube.readonly", "https://www.googleapis.com/auth/youtube.upload"]
 api_service_name = "youtube"
 api_version = "v3"
 
-def get_authenticated_service():
-    flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_config(json.loads(os.environ["CLIENT_CONFIG"]), scopes)
-    credentials = flow.run_local_server(port=0)
-    return googleapiclient.discovery.build(
-        api_service_name, api_version, credentials=credentials)
+# This sets up a configuration for the OAuth flow
+oauth_flow = google_auth_oauthlib.flow.Flow.from_client_config(
+    json.loads(os.environ["CLIENT_CONFIG"]),
+    # scopes define what APIs you want to access on behave of the user once authenticated
+    scopes=["https://www.googleapis.com/auth/youtubepartner", "https://www.googleapis.com/auth/youtube.force-ssl", "https://www.googleapis.com/auth/youtube", "https://www.googleapis.com/auth/youtube.readonly", "https://www.googleapis.com/auth/youtube.upload"]
+)
 
 @app.route('/')
 def home():
     return 'Hello, World123!'
+
+# This is entrypoint of the login page. It will redirect to the Google login service located at the
+# `authorization_url`. The `redirect_uri` is actually the URI which the Google login service will use to
+# redirect back to this app.
+@app.route('/signin')
+def signin():
+    # We rewrite the URL from http to https because inside the Replit App http is used,
+    # but externally it's accessed via https, and the redirect_uri has to match that
+    oauth_flow.redirect_uri = url_for('oauth2callback', _external=True)
+    authorization_url, state = oauth_flow.authorization_url()
+    session['state'] = state
+    return redirect(authorization_url)
+
+@app.route('/oauth2callback')
+def oauth2callback():
+    if not session['state'] == request.args['state']:
+        return Response("Invalid state parameter.", 401)
+    oauth_flow.fetch_token(authorization_response=request.url.replace('http:', 'https:'))
+    session['access_token'] = oauth_flow.credentials.token
+    return redirect("/")
 
 @app.route('/download_video', methods=['GET'])
 def download_video():
@@ -45,7 +66,7 @@ def download_video():
         return f'Error fetching the URL: {str(e)}', 500
 
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-    youtube = get_authenticated_service()
+    youtube = googleapiclient.discovery.build(api_service_name, api_version, credentials=oauth_flow.credentials)
 
     # Extract filename from Content-Disposition header or URL
     content_disposition = video_file_response.headers.get('Content-Disposition', '')
@@ -90,4 +111,4 @@ def download_video():
     )
 
 if __name__ == "__main__":
-    app.run()
+    app.run(port=5000)
